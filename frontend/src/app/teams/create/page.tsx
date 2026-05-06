@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -12,7 +12,7 @@ import { ROLE_LABELS, Role } from '@/types'
 const ROLES: Role[] = ['top', 'jgl', 'mid', 'adc', 'sup']
 
 export default function CreateTeamPage() {
-  const { data: session } = useSession()
+  const { data: session, status } = useSession()
   const router = useRouter()
   const [name, setName] = useState('')
   const [tag, setTag] = useState('')
@@ -20,6 +20,10 @@ export default function CreateTeamPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const token = (session?.user as any)?.djangoAccessToken
+
+  useEffect(() => {
+    if (status === 'unauthenticated') router.push('/login')
+  }, [status, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -35,9 +39,12 @@ export default function CreateTeamPage() {
     }
   }
 
-  if (!session) {
-    router.push('/login')
-    return null
+  if (status === 'loading') {
+    return (
+      <div className="flex min-h-[80vh] items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+      </div>
+    )
   }
 
   return (

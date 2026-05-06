@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -9,7 +9,7 @@ import { createSeason } from '@/lib/api'
 import { AlertCircle, Trophy } from 'lucide-react'
 
 export default function CreateSeasonPage() {
-  const { data: session } = useSession()
+  const { data: session, status } = useSession()
   const router = useRouter()
   const [name, setName] = useState('')
   const [splitNumber, setSplitNumber] = useState(1)
@@ -18,6 +18,10 @@ export default function CreateSeasonPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const token = (session?.user as any)?.djangoAccessToken
+
+  useEffect(() => {
+    if (status === 'unauthenticated') router.push('/login')
+  }, [status, router])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -41,9 +45,12 @@ export default function CreateSeasonPage() {
     }
   }
 
-  if (!session) {
-    router.push('/login')
-    return null
+  if (status === 'loading') {
+    return (
+      <div className="flex min-h-[80vh] items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+      </div>
+    )
   }
 
   return (
