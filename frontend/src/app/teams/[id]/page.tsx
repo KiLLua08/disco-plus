@@ -4,11 +4,11 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { getTeam, invitePlayer, getPlayers } from '@/lib/api'
-import { Team, Player } from '@/types'
-import { Shield, Users, Plus, AlertCircle } from 'lucide-react'
-import { formatRole } from '@/lib/utils'
+import { getTeam, getJoinRequests, handleJoinRequest } from '@/lib/api'
+import { formatRole, getRankColor } from '@/lib/utils'
+import { Shield, Users, CheckCircle, XCircle, Bell } from 'lucide-react'
 
 const ROLE_COLORS: Record<string, string> = {
   top: 'bg-red-500/20 text-red-300 border-red-500/30',
@@ -23,41 +23,37 @@ const ROLES = ['top', 'jgl', 'mid', 'adc', 'sup']
 export default function TeamDetailPage() {
   const { id } = useParams<{ id: string }>()
   const { data: session } = useSession()
-  const [team, setTeam] = useState<Team | null>(null)
-  const [players, setPlayers] = useState<Player[]>([])
+  const [team, setTeam] = useState<any>(null)
+  const [joinRequests, setJoinRequests] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [invitePlayerId, setInvitePlayerId] = useState('')
-  const [inviteRole, setInviteRole] = useState('mid')
-  const [inviting, setInviting] = useState(false)
-  const [inviteError, setInviteError] = useState('')
-  const [inviteSuccess, setInviteSuccess] = useState(false)
+  const [handling, setHandling] = useState<number | null>(null)
 
   const token = (session?.user as any)?.djangoAccessToken
   const user = session?.user as any
 
-  useEffect(() => {
+  const refresh = async () => {
     const teamId = parseInt(id)
-    Promise.all([getTeam(teamId, token), getPlayers(token)])
-      .then(([t, p]) => { setTeam(t); setPlayers(p) })
-      .catch(console.error)
-      .finally(() => setLoading(false))
+    const t = await getTeam(teamId, token)
+    setTeam(t)
+    if (t.captain?.discord_id === user?.discordId) {
+      const reqs = await getJoinRequests(teamId, token).catch(() => [])
+      setJoinRequests(reqs)
+    }
+  }
+
+  useEffect(() => {
+    refresh().finally(() => setLoading(false))
   }, [id, token])
 
-  const isCaptain = team?.captain?.discord_id === user?.discordId
-
-  const handleInvite = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setInviting(true)
-    setInviteError('')
-    setInviteSuccess(false)
+  const handleRequest = async (requestId: number, action: 'accept' | 'decline') => {
+    setHandling(requestId)
     try {
-      await invitePlayer(team!.id, { player_id: parseInt(invitePlayerId), role: inviteRole }, token)
-      setInviteSuccess(true)
-      setInvitePlayerId('')
+      await handleJoinRequest(parseInt(id), { request_id: requestId, action }, token)
+      await refresh()
     } catch (err: any) {
-      setInviteError(err.message || 'Failed to send invite.')
+      alert(err.message)
     } finally {
-      setInviting(false)
+      setHandling(null)
     }
   }
 
@@ -73,15 +69,16 @@ export default function TeamDetailPage() {
     return <div className="flex min-h-[80vh] items-center justify-center"><p className="text-gray-400">Team not found.</p></div>
   }
 
-  const filledRoles = new Set(team.members?.map((m) => m.role) || [])
-  const openRoles = ROLES.filter((r) => !filledRoles.has(r))
+  const isCaptain = team.captain?.discord_id === user?.discordId
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+      {/* Header */}
       <div className="mb-8">
         <div className="flex items-center gap-3 mb-1">
           <h1 className="text-3xl font-bold text-white">{team.name}</h1>
           <span className="rounded-full border border-white/20 px-2 py-0.5 text-sm text-gray-400 font-mono">{team.tag}</span>
+          {team.season && <Badge variant="success">In Season</Badge>}
         </div>
         <div className="flex items-center gap-2 text-sm text-gray-400">
           <Shield className="h-4 w-4" /> Captain: {team.captain?.discord_username}
@@ -90,16 +87,84 @@ export default function TeamDetailPage() {
         </div>
       </div>
 
+      {/* Join Requests — captain only */}
+      {isCaptain && joinRequests.length > 0 && (
+        <Card className="mb-6 border-yellow-500/30">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Bell className="h-4 w-4 text-yellow-400" />
+              Join Requests
+              <span className="ml-1 rounded-full bg-yellow-500/20 text-yellow-300 text-xs px-2 py-0.5">
+                {joinRequests.length}
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {joinRequests.map((req) => (
+                <div key={req.id} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/5 p-3">
+                  <div>
+                    <p className="text-sm font-medium text-white">
+                      {req.player.discord_username}
+                      {req.player.riot_game_name && (
+                        <span className="ml-2 text-xs text-gray-400">
+                          {req.player.riot_game_name}#{req.player.riot_tag_line}
+                        </span>
+                      )}
+                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className={`rounded-full px-2 py-0.5 text-xs border ${ROLE_COLORS[req.role]}`}>
+                        {formatRole(req.role)}{req.is_sub ? ' (sub)' : ''}
+                      </span>
+                      {req.player.riot_rank && (
+                        <span className={`text-xs ${getRankColor(req.player.riot_rank)}`}>
+                          {req.player.riot_rank}
+                        </span>
+                      )}
+                    </div>
+                    {req.message && (
+                      <p className="text-xs text-gray-400 mt-1 italic">&ldquo;{req.message}&rdquo;</p>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      className="gap-1 bg-green-600/20 text-green-300 hover:bg-green-600/40 border border-green-500/30"
+                      disabled={handling === req.id}
+                      onClick={() => handleRequest(req.id, 'accept')}
+                    >
+                      <CheckCircle className="h-3 w-3" /> Accept
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="gap-1 text-red-400 hover:bg-red-500/10"
+                      disabled={handling === req.id}
+                      onClick={() => handleRequest(req.id, 'decline')}
+                    >
+                      <XCircle className="h-3 w-3" /> Decline
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Roster */}
       <Card className="mb-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <Users className="h-5 w-5" /> Roster ({team.members?.length ?? 0}/5)
+            <Users className="h-5 w-5" />
+            Main Roster ({team.main_count}/5)
+            {team.is_roster_complete && <Badge variant="success">Complete</Badge>}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="space-y-2">
             {ROLES.map((role) => {
-              const member = team.members?.find((m) => m.role === role)
+              const member = team.members?.find((m: any) => m.role === role && !m.is_sub)
               return (
                 <div key={role} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/5 p-3">
                   <div className="flex items-center gap-3">
@@ -118,7 +183,9 @@ export default function TeamDetailPage() {
                     )}
                   </div>
                   {member?.player.riot_rank && (
-                    <span className="text-xs text-gray-400">{member.player.riot_rank}</span>
+                    <span className={`text-xs ${getRankColor(member.player.riot_rank)}`}>
+                      {member.player.riot_rank}
+                    </span>
                   )}
                 </div>
               )
@@ -127,42 +194,42 @@ export default function TeamDetailPage() {
         </CardContent>
       </Card>
 
-      {isCaptain && openRoles.length > 0 && (
+      {/* Subs */}
+      {(team.sub_count > 0 || isCaptain) && (
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Plus className="h-5 w-5" /> Invite Player</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              Substitutes ({team.sub_count}/2)
+            </CardTitle>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleInvite} className="space-y-4">
-              <div>
-                <label className="mb-1 block text-xs text-gray-400">Player</label>
-                <select value={invitePlayerId} onChange={(e) => setInvitePlayerId(e.target.value)} required
-                  className="w-full rounded-lg border border-white/10 bg-gray-900 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none">
-                  <option value="">Select a player...</option>
-                  {players.filter((p) => !team.members?.some((m) => m.player.id === p.id)).map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.discord_username}{p.riot_game_name ? ` (${p.riot_game_name}#${p.riot_tag_line})` : ''}
-                    </option>
-                  ))}
-                </select>
+            {team.members?.filter((m: any) => m.is_sub).length === 0 ? (
+              <p className="text-sm text-gray-500">No subs yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {team.members?.filter((m: any) => m.is_sub).map((member: any) => (
+                  <div key={member.id} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/5 p-3">
+                    <div className="flex items-center gap-3">
+                      <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${ROLE_COLORS[member.role]}`}>
+                        {formatRole(member.role)}
+                      </span>
+                      <div>
+                        <p className="text-sm font-medium text-white">{member.player.discord_username}</p>
+                        {member.player.riot_game_name && (
+                          <p className="text-xs text-gray-400">{member.player.riot_game_name}#{member.player.riot_tag_line}</p>
+                        )}
+                      </div>
+                    </div>
+                    {member.player.riot_rank && (
+                      <span className={`text-xs ${getRankColor(member.player.riot_rank)}`}>
+                        {member.player.riot_rank}
+                      </span>
+                    )}
+                  </div>
+                ))}
               </div>
-              <div>
-                <label className="mb-1 block text-xs text-gray-400">Role</label>
-                <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value)}
-                  className="w-full rounded-lg border border-white/10 bg-gray-900 px-3 py-2 text-sm text-white focus:border-indigo-500 focus:outline-none">
-                  {openRoles.map((r) => <option key={r} value={r}>{formatRole(r)}</option>)}
-                </select>
-              </div>
-              {inviteError && (
-                <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-                  <AlertCircle className="h-4 w-4 flex-shrink-0" />{inviteError}
-                </div>
-              )}
-              {inviteSuccess && <p className="text-sm text-green-400">Invite sent!</p>}
-              <Button type="submit" disabled={inviting} className="gap-2">
-                <Plus className="h-4 w-4" />{inviting ? 'Sending...' : 'Send Invite'}
-              </Button>
-            </form>
+            )}
           </CardContent>
         </Card>
       )}

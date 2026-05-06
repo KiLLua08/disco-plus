@@ -33,7 +33,7 @@ export function Navbar() {
                   Seasons
                 </Button>
               </Link>
-              <Link href="/teams">
+              <Link href="/teams/browse">
                 <Button variant="ghost" size="sm" className="gap-2">
                   <Users className="h-4 w-4" />
                   Teams

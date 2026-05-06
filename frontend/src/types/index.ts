@@ -39,13 +39,18 @@ export interface Season {
   id: number
   name: string
   split_number: number
-  status: 'upcoming' | 'active' | 'completed'
+  status: 'upcoming' | 'registration' | 'active' | 'completed'
   total_rounds: number
   current_round: number
+  min_teams: number
   start_date: string | null
   end_date: string | null
+  match_day: string
+  match_time: string
   created_by: Player
   teams: Team[]
+  registered_teams_count: number
+  can_start: boolean
   created_at: string
 }
 

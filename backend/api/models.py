@@ -7,8 +7,6 @@ from django.contrib.auth.models import User
 # ---------------------------------------------------------------------------
 
 class Player(models.Model):
-    """Extends Django User with Discord + Riot identity and MMR data."""
-
     ROLE_CHOICES = [
         ('top', 'Top'),
         ('jgl', 'Jungle'),
@@ -22,21 +20,14 @@ class Player(models.Model):
     discord_username = models.CharField(max_length=100, blank=True)
     discord_avatar = models.CharField(max_length=200, blank=True)
 
-    # Riot identity
     riot_puuid = models.CharField(max_length=100, blank=True, db_index=True)
-    riot_game_name = models.CharField(max_length=64, blank=True)   # e.g. "Faker"
-    riot_tag_line = models.CharField(max_length=16, blank=True)    # e.g. "KR1"
+    riot_game_name = models.CharField(max_length=64, blank=True)
+    riot_tag_line = models.CharField(max_length=16, blank=True)
     riot_summoner_id = models.CharField(max_length=100, blank=True)
-    riot_rank = models.CharField(max_length=32, blank=True)        # e.g. "GOLD II"
+    riot_rank = models.CharField(max_length=32, blank=True)
 
-    # Role-based TrueSkill MMR stored as JSON
-    # {"mid": {"mu": 32.1, "sigma": 2.4}, "top": {"mu": 25.0, "sigma": 4.1}}
     role_mmr = models.JSONField(default=dict)
-
-    # LP token economy
     lp_tokens = models.IntegerField(default=0)
-
-    # Preferred role
     preferred_role = models.CharField(max_length=8, choices=ROLE_CHOICES, blank=True)
 
     is_admin = models.BooleanField(default=False)
@@ -47,12 +38,10 @@ class Player(models.Model):
         return f"{self.discord_username} ({self.riot_game_name}#{self.riot_tag_line})"
 
     def get_role_mmr(self, role: str) -> dict:
-        """Return TrueSkill mu/sigma for a role, seeding defaults if missing."""
         defaults = {'mu': 25.0, 'sigma': 8.333}
         return self.role_mmr.get(role, defaults)
 
     def set_role_mmr(self, role: str, mu: float, sigma: float):
-        """Update TrueSkill values for a specific role."""
         if not self.role_mmr:
             self.role_mmr = {}
         self.role_mmr[role] = {'mu': round(mu, 4), 'sigma': round(sigma, 4)}
@@ -65,6 +54,7 @@ class Player(models.Model):
 class Season(models.Model):
     STATUS_CHOICES = [
         ('upcoming', 'Upcoming'),
+        ('registration', 'Registration Open'),
         ('active', 'Active'),
         ('completed', 'Completed'),
     ]
@@ -74,8 +64,12 @@ class Season(models.Model):
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='upcoming')
     total_rounds = models.PositiveIntegerField(default=4)
     current_round = models.PositiveIntegerField(default=0)
+    min_teams = models.PositiveIntegerField(default=5)  # min teams to start
     start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
+    # Day/time for matches (e.g. "Sunday 16:00")
+    match_day = models.CharField(max_length=20, blank=True, default='Sunday')
+    match_time = models.CharField(max_length=10, blank=True, default='16:00')
     created_by = models.ForeignKey(
         Player, on_delete=models.SET_NULL, null=True, related_name='seasons_created'
     )
@@ -84,37 +78,61 @@ class Season(models.Model):
     def __str__(self):
         return f"{self.name} (Split {self.split_number})"
 
+    @property
+    def registered_teams_count(self):
+        return self.teams.count()
+
+    @property
+    def can_start(self):
+        return self.status == 'registration' and self.registered_teams_count >= self.min_teams
+
 
 # ---------------------------------------------------------------------------
 # Team
 # ---------------------------------------------------------------------------
 
 class Team(models.Model):
-    name = models.CharField(max_length=100)
+    name = models.CharField(max_length=100, unique=True)
     tag = models.CharField(max_length=8)
     captain = models.ForeignKey(
         Player, on_delete=models.SET_NULL, null=True, related_name='captained_teams'
     )
+    # Season is set when team registers for a season, null = not registered yet
     season = models.ForeignKey(
-        Season, on_delete=models.CASCADE, related_name='teams', null=True, blank=True
+        Season, on_delete=models.SET_NULL, related_name='teams', null=True, blank=True
     )
 
-    # Swiss standings
     wins = models.PositiveIntegerField(default=0)
     losses = models.PositiveIntegerField(default=0)
-    buchholz = models.FloatField(default=0.0)  # tiebreaker
+    buchholz = models.FloatField(default=0.0)
 
     created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ('name', 'season')
 
     def __str__(self):
         return f"{self.name} [{self.tag}]"
 
     @property
     def points(self):
-        return self.wins * 2  # 2 pts per win, 0 per loss (no draws in LoL)
+        return self.wins * 2
+
+    @property
+    def main_members(self):
+        return self.members.filter(is_sub=False)
+
+    @property
+    def sub_members(self):
+        return self.members.filter(is_sub=True)
+
+    @property
+    def is_roster_complete(self):
+        """True when all 5 main roles are filled."""
+        return self.main_members.count() == 5
+
+    @property
+    def open_main_roles(self):
+        filled = set(self.main_members.values_list('role', flat=True))
+        all_roles = {'top', 'jgl', 'mid', 'adc', 'sup'}
+        return list(all_roles - filled)
 
 
 # ---------------------------------------------------------------------------
@@ -127,13 +145,45 @@ class TeamMember(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='members')
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name='team_memberships')
     role = models.CharField(max_length=8, choices=ROLE_CHOICES)
+    is_sub = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        unique_together = ('team', 'role')  # one player per role per team
+        # Main players: one per role per team. Subs: no role uniqueness constraint.
+        # Enforced in code, not DB, to allow subs with same role.
+        unique_together = []
 
     def __str__(self):
-        return f"{self.player.discord_username} → {self.team.name} ({self.role})"
+        sub_label = ' (sub)' if self.is_sub else ''
+        return f"{self.player.discord_username} → {self.team.name} ({self.role}{sub_label})"
+
+
+# ---------------------------------------------------------------------------
+# JoinRequest — player requests to join a team
+# ---------------------------------------------------------------------------
+
+class JoinRequest(models.Model):
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('accepted', 'Accepted'),
+        ('declined', 'Declined'),
+    ]
+
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='join_requests')
+    player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name='join_requests')
+    role = models.CharField(max_length=8, choices=Player.ROLE_CHOICES)
+    is_sub = models.BooleanField(default=False)
+    message = models.CharField(max_length=200, blank=True)  # optional note from player
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
+    created_at = models.DateTimeField(auto_now_add=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        # One pending request per player per team
+        unique_together = ('team', 'player')
+
+    def __str__(self):
+        return f"{self.player.discord_username} → {self.team.name} ({self.role}) [{self.status}]"
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +208,8 @@ class Match(models.Model):
     round_number = models.PositiveIntegerField()
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='scheduled')
 
-    # Riot data
     riot_match_id = models.CharField(max_length=100, blank=True, db_index=True)
-    data = models.JSONField(default=dict, blank=True)  # full Riot API response cached here
+    data = models.JSONField(default=dict, blank=True)
 
     scheduled_at = models.DateTimeField(null=True, blank=True)
     reported_at = models.DateTimeField(null=True, blank=True)
@@ -168,9 +217,7 @@ class Match(models.Model):
     reported_by = models.ForeignKey(
         Player, on_delete=models.SET_NULL, null=True, blank=True, related_name='reported_matches'
     )
-
     discord_thread_id = models.CharField(max_length=64, blank=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -221,7 +268,7 @@ class Prediction(models.Model):
         Team, on_delete=models.CASCADE, related_name='predicted_wins'
     )
     lp_wagered = models.PositiveIntegerField(default=0)
-    payout = models.IntegerField(default=0)  # can be negative
+    payout = models.IntegerField(default=0)
     settled = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -233,7 +280,7 @@ class Prediction(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# TeamInvite
+# TeamInvite — captain invites a player directly
 # ---------------------------------------------------------------------------
 
 class TeamInvite(models.Model):
@@ -247,6 +294,7 @@ class TeamInvite(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='invites')
     player = models.ForeignKey(Player, on_delete=models.CASCADE, related_name='invites')
     role = models.CharField(max_length=8, choices=Player.ROLE_CHOICES)
+    is_sub = models.BooleanField(default=False)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='pending')
     invited_by = models.ForeignKey(
         Player, on_delete=models.SET_NULL, null=True, related_name='sent_invites'

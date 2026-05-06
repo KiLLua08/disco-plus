@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Player, Season, Team, TeamMember, Match, Bounty, Prediction, TeamInvite
+from .models import (
+    Player, Season, Team, TeamMember, Match, Bounty,
+    Prediction, TeamInvite, JoinRequest,
+)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -17,15 +20,15 @@ class PlayerSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'discord_id', 'discord_username', 'discord_avatar',
             'riot_game_name', 'riot_tag_line', 'riot_rank',
-            'role_mmr', 'lp_tokens', 'preferred_role', 'is_admin',
-            'created_at',
+            'role_mmr', 'lp_tokens', 'preferred_role', 'is_admin', 'created_at',
         ]
-        read_only_fields = ['discord_id', 'role_mmr', 'lp_tokens', 'is_admin', 'created_at',
-                            'riot_game_name', 'riot_tag_line', 'riot_rank']
+        read_only_fields = [
+            'discord_id', 'role_mmr', 'lp_tokens', 'is_admin', 'created_at',
+            'riot_game_name', 'riot_tag_line', 'riot_rank',
+        ]
 
 
 class PlayerPublicSerializer(serializers.ModelSerializer):
-    """Minimal public profile — no sensitive data."""
     username = serializers.CharField(source='user.username', read_only=True)
 
     class Meta:
@@ -39,41 +42,61 @@ class PlayerPublicSerializer(serializers.ModelSerializer):
 
 class TeamMemberSerializer(serializers.ModelSerializer):
     player = PlayerPublicSerializer(read_only=True)
-    player_id = serializers.PrimaryKeyRelatedField(
-        queryset=Player.objects.all(), source='player', write_only=True
-    )
 
     class Meta:
         model = TeamMember
-        fields = ['id', 'player', 'player_id', 'role', 'joined_at']
+        fields = ['id', 'player', 'role', 'is_sub', 'joined_at']
+
+
+class JoinRequestSerializer(serializers.ModelSerializer):
+    player = PlayerPublicSerializer(read_only=True)
+
+    class Meta:
+        model = JoinRequest
+        fields = ['id', 'team', 'player', 'role', 'is_sub', 'message', 'status', 'created_at', 'responded_at']
+        read_only_fields = ['status', 'created_at', 'responded_at']
 
 
 class TeamSerializer(serializers.ModelSerializer):
     members = TeamMemberSerializer(many=True, read_only=True)
     captain = PlayerPublicSerializer(read_only=True)
-    captain_id = serializers.PrimaryKeyRelatedField(
-        queryset=Player.objects.all(), source='captain', write_only=True, required=False
-    )
     points = serializers.IntegerField(read_only=True)
+    is_roster_complete = serializers.BooleanField(read_only=True)
+    open_main_roles = serializers.ListField(read_only=True)
+    main_count = serializers.SerializerMethodField()
+    sub_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Team
         fields = [
-            'id', 'name', 'tag', 'captain', 'captain_id', 'season',
-            'wins', 'losses', 'buchholz', 'points', 'members', 'created_at',
+            'id', 'name', 'tag', 'captain', 'season',
+            'wins', 'losses', 'buchholz', 'points',
+            'members', 'is_roster_complete', 'open_main_roles',
+            'main_count', 'sub_count', 'created_at',
         ]
         read_only_fields = ['wins', 'losses', 'buchholz', 'created_at']
+
+    def get_main_count(self, obj):
+        return obj.main_members.count()
+
+    def get_sub_count(self, obj):
+        return obj.sub_members.count()
 
 
 class SeasonSerializer(serializers.ModelSerializer):
     teams = TeamSerializer(many=True, read_only=True)
     created_by = PlayerPublicSerializer(read_only=True)
+    registered_teams_count = serializers.IntegerField(read_only=True)
+    can_start = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Season
         fields = [
             'id', 'name', 'split_number', 'status', 'total_rounds',
-            'current_round', 'start_date', 'end_date', 'created_by', 'teams', 'created_at',
+            'current_round', 'min_teams', 'start_date', 'end_date',
+            'match_day', 'match_time',
+            'created_by', 'teams', 'registered_teams_count', 'can_start',
+            'created_at',
         ]
         read_only_fields = ['current_round', 'created_at']
 
@@ -136,19 +159,17 @@ class TeamInviteSerializer(serializers.ModelSerializer):
     class Meta:
         model = TeamInvite
         fields = [
-            'id', 'team', 'player', 'role', 'status', 'invited_by',
-            'created_at', 'responded_at',
+            'id', 'team', 'player', 'role', 'is_sub', 'status',
+            'invited_by', 'created_at', 'responded_at',
         ]
         read_only_fields = ['status', 'created_at', 'responded_at']
 
 
 class MatchReportSerializer(serializers.Serializer):
-    """Used by the /matches/{id}/report/ endpoint."""
     riot_match_id = serializers.CharField(max_length=100)
 
 
 class DiscordAuthSerializer(serializers.Serializer):
-    """Payload sent from Next.js after Discord OAuth completes."""
     discord_id = serializers.CharField(max_length=64)
     discord_username = serializers.CharField(max_length=100)
     discord_avatar = serializers.CharField(max_length=200, allow_blank=True, required=False)
@@ -157,6 +178,11 @@ class DiscordAuthSerializer(serializers.Serializer):
 
 
 class RiotLinkSerializer(serializers.Serializer):
-    """Link a Riot account to the current player."""
     riot_game_name = serializers.CharField(max_length=64)
     riot_tag_line = serializers.CharField(max_length=16)
+
+
+class GeneratePairingsSerializer(serializers.Serializer):
+    """Used by admin to generate pairings with a scheduled date/time."""
+    scheduled_date = serializers.DateField()
+    scheduled_time = serializers.TimeField()
