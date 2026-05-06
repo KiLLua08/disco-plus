@@ -104,15 +104,17 @@ CHANNEL_LAYERS = {
 }
 
 # Celery — ssl_cert_reqs=None allows Upstash's self-signed cert
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
+# Celery — ssl_cert_reqs must be in the URL for rediss:// on newer Celery
+_celery_redis_url = REDIS_URL
+if _redis_is_tls and 'ssl_cert_reqs' not in REDIS_URL:
+    _celery_redis_url = REDIS_URL + ('&' if '?' in REDIS_URL else '?') + 'ssl_cert_reqs=CERT_NONE'
+
+CELERY_BROKER_URL = _celery_redis_url
+CELERY_RESULT_BACKEND = _celery_redis_url
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
-if _redis_is_tls:
-    CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': None}
-    CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': None}
 
 # CORS — read from env in production, fallback to localhost for dev
 _cors_origins = os.getenv('CORS_ALLOWED_ORIGINS', '')
