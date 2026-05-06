@@ -89,20 +89,30 @@ else:
 # Redis / Channels
 REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 
+# channels_redis needs SSL config when using rediss:// (Upstash)
+_redis_is_tls = REDIS_URL.startswith('rediss://')
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {'hosts': [REDIS_URL]},
+        'CONFIG': {
+            'hosts': [{
+                'address': REDIS_URL,
+                'ssl': _redis_is_tls,
+            }],
+        },
     },
 }
 
-# Celery
+# Celery — ssl_cert_reqs=None allows Upstash's self-signed cert
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'UTC'
+if _redis_is_tls:
+    CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': None}
+    CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': None}
 
 # CORS — read from env in production, fallback to localhost for dev
 _cors_origins = os.getenv('CORS_ALLOWED_ORIGINS', '')
